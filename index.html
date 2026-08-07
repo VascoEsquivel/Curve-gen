@@ -63,7 +63,13 @@ tbody tr.sel .ro{color:#fff}
 tbody tr:hover:not(.sel) td{background:var(--accent2)}
 tbody tr.off input[data-k=name]{text-decoration:line-through;opacity:.55}
 td input[type=text],td input[type=number],td select{width:100%;border:0;background:transparent;padding:3px 6px;outline:none}
-td input:focus{background:#fff9c4;color:#000;box-shadow:inset 0 0 0 1px var(--accent)}
+/* The focused-cell style must outrank `tbody tr.sel input{color:#fff}`, otherwise
+   editing a cell on a selected row paints white text on a pale background and the
+   value you are typing disappears. Listed for both states so it always wins. */
+tbody tr td input:focus,tbody tr td select:focus,
+tbody tr.sel td input:focus,tbody tr.sel td select:focus{
+  background:#fffdf0;color:#14181d;box-shadow:inset 0 0 0 2px var(--accent);border-radius:2px}
+tbody tr td input:focus::selection{background:#b9d4f6;color:#14181d}
 td input[type=number]{-moz-appearance:textfield}
 td input[type=number]::-webkit-outer-spin-button,td input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 td.ro{padding:3px 6px;color:var(--muted);text-align:right}
@@ -287,6 +293,8 @@ input[type=range]{width:100%}
         <div><span class="kbd">← →</span> nudge centre · <span class="kbd">↑ ↓</span> height</div>
         <div><span class="kbd">Shift</span> + arrows = 10× step</div>
         <div><span class="kbd">Ctrl+Z / Ctrl+Y</span> undo / redo</div>
+        <div><span class="kbd">click row</span> select · click again = deselect</div>
+        <div><span class="kbd">Esc</span> deselect current curve</div>
         <div><span class="kbd">Del</span> delete selected curve</div>
         <div><span class="kbd">F</span> run auto-fit</div>
       </div></details>
@@ -720,6 +728,9 @@ function renderPlot(){
 }
 
 /* ================= table ================================================ */
+function highlightRows(){
+  [...$("#tbody").children].forEach(r=>r.classList.toggle("sel",+r.dataset.id===state.sel));
+}
 function renderTable(){
   const tb=$("#tbody"); tb.innerHTML="";
   const areas=state.peaks.map(p=>peakArea(p));
@@ -1313,16 +1324,24 @@ function wireUI(){
 function wireTable(){
   const tb=$("#tbody");
   tb.addEventListener("focusin",e=>{ const tr=e.target.closest("tr"); if(!tr) return;
-    if(state.sel!=tr.dataset.id){ state.sel=+tr.dataset.id; renderPlot();
-      [...tb.children].forEach(r=>r.classList.toggle("sel",r.dataset.id===tr.dataset.id)); renderStatus(); } });
+    if(state.sel!==+tr.dataset.id){ state.sel=+tr.dataset.id; highlightRows(); renderPlot(); renderStatus(); } });
   tb.addEventListener("mousedown",e=>{
     const tr=e.target.closest("tr"); if(!tr) return;
-    state.sel=+tr.dataset.id;
-    [...tb.children].forEach(r=>r.classList.toggle("sel",r.dataset.id===tr.dataset.id));
-    renderPlot(); renderStatus();
+    const id=+tr.dataset.id;
     const lk=e.target.closest("b[data-lk]");
-    if(lk){ const p=selPeak(); p.lock[lk.dataset.lk]=!p.lock[lk.dataset.lk];
+    // Clicking a form control keeps the row selected so editing works; clicking
+    // anywhere else on the row toggles selection, so a second click deselects.
+    const onControl=!!(lk||e.target.closest("input,select,button"));
+    state.sel=(!onControl&&state.sel===id) ? null : id;
+    highlightRows(); renderPlot(); renderStatus();
+    if(lk){ const p=state.peaks.find(q=>q.id===id);
+      p.lock[lk.dataset.lk]=!p.lock[lk.dataset.lk];
       lk.classList.toggle("on",p.lock[lk.dataset.lk]); e.preventDefault(); }
+  });
+  // clicking the blank area under the last row clears the selection too
+  $(".tablewrap").addEventListener("mousedown",e=>{
+    if(e.target.closest("tr")||e.target.closest("thead")) return;
+    if(state.sel!==null){ state.sel=null; highlightRows(); renderPlot(); renderStatus(); }
   });
   tb.addEventListener("input",e=>{
     const tr=e.target.closest("tr"); if(!tr) return;
@@ -1379,7 +1398,8 @@ function wirePlot(){
     let best=null,bd=1e9;
     for(const p of state.peaks){ if(!p.show) continue;
       const d=Math.abs(GEO.sx(p.x0)-px); if(d<bd){bd=d;best=p;} }
-    if(best&&bd<28){ state.sel=best.id; renderAll(); }
+    if(best&&bd<28){ state.sel=(state.sel===best.id)?null:best.id; renderAll(); }
+    else if(state.sel!==null){ state.sel=null; renderAll(); }   // click away = deselect
   });
   window.addEventListener("mouseup",()=>{ if(drag){drag=null; computeStats(); renderAll();} });
   svg.addEventListener("dblclick",e=>{
@@ -1494,8 +1514,17 @@ function boot(){
     requestAnimationFrame(()=>renderPlot());};
   $("#ratA").onchange=$("#ratB").onchange=renderAnalysis;
 
+  // e.target is not always an Element (it can be `document`), and Document has no
+  // .matches — calling it unguarded throws inside the listener, which dispatch
+  // silently swallows, so the key appears to do nothing at all.
+  const isField=el=>!!(el&&typeof el.matches==="function"&&el.matches("input,select,textarea"));
   document.addEventListener("keydown",e=>{
-    if(e.target.matches("input,select,textarea")&&!(e.ctrlKey||e.metaKey)) return;
+    if(e.key==="Escape"){                       // always clears the selection
+      if(isField(e.target)) e.target.blur();
+      if(state.sel!==null){ state.sel=null; highlightRows(); renderPlot(); renderStatus(); }
+      return;
+    }
+    if(isField(e.target)&&!(e.ctrlKey||e.metaKey)) return;
     if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();undo();}
     else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="y"){e.preventDefault();redo();}
     else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();saveProject();}
